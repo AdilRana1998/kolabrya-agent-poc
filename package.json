@@ -1,0 +1,47 @@
+{
+  "name": "kolabrya-agent",
+  "version": "1.0.0",
+  "description": "Kolabrya Agent - Electron desktop app with MCP-style AI agent for case + file workflows",
+  "main": "main.js",
+  "author": "Kolabrya",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --enable-logging",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "postinstall": "electron-builder install-app-deps",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "mime-types": "^2.1.35",
+    "openai": "^4.67.1",
+    "p-limit": "^3.1.0"
+  },
+  "devDependencies": {
+    "electron": "^32.1.2",
+    "electron-builder": "^25.0.5",
+    "electron-rebuild": "^3.2.9"
+  },
+  "build": {
+    "appId": "com.kolabrya.agent",
+    "productName": "Kolabrya Agent",
+    "files": [
+      "main.js",
+      "preload.js",
+      "electron/**/*",
+      "agent/**/*",
+      "api/**/*",
+      "db/**/*",
+      "renderer/**/*",
+      "node_modules/**/*"
+    ],
+    "directories": {
+      "output": "dist"
+    }
+  }
+}
