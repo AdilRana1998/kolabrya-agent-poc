@@ -258,12 +258,13 @@ function registerIpc() {
       })),
     };
     const presignedResp = await api.post('/presigned-urls', presignedReq);
+    const payload = presignedResp.data?.body ?? presignedResp.data ?? {};
     const presigned =
-      presignedResp.data?.urls ||
-      presignedResp.data?.data ||
-      presignedResp.data?.files ||
-      presignedResp.data ||
-      [];
+      payload.urls ||
+      payload.data ||
+      payload.files ||
+      payload.presignedUrls ||
+      (Array.isArray(payload) ? payload : []);
     const byName = new Map();
     for (const p of presigned) {
       const fname = p.fileName || p.name;

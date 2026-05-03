@@ -64,14 +64,16 @@ module.exports = {
         fieldName: 'caseFiles',
       })),
     };
-    ctx.log('info', 'Requesting presigned URLs…');
+    ctx.log('info', `Requesting presigned URLs for: ${candidates.map((c) => c.name).join(', ')}`);
     const presignedResp = await ctx.api.post('/presigned-urls', presignedReq);
+    // This backend wraps responses as { body: ... } (same as /create -> body.requestUuid).
+    const payload = presignedResp.data?.body ?? presignedResp.data ?? {};
     const presigned =
-      presignedResp.data?.urls ||
-      presignedResp.data?.data ||
-      presignedResp.data?.files ||
-      presignedResp.data ||
-      [];
+      payload.urls ||
+      payload.data ||
+      payload.files ||
+      payload.presignedUrls ||
+      (Array.isArray(payload) ? payload : []);
     if (!Array.isArray(presigned) || presigned.length !== candidates.length) {
       throw new Error(
         `Presigned URL response shape unexpected. Got ${Array.isArray(presigned) ? presigned.length : typeof presigned} entries for ${candidates.length} files.`
