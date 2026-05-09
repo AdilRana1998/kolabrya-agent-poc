@@ -15,6 +15,11 @@ const { runAgent } = require('./agent/agent-engine');
 const { uploadOne } = require('./api/azure-uploader');
 const pLimit = require('p-limit');
 
+// --- Outlook integration ---
+const outlookAuth = require('./outlook/auth');
+const outlookMonitor = require('./outlook/monitor');
+const { listTemplates } = require('./outlook/email-templates');
+
 // ---- App-wide singletons ----
 let mainWin = null;
 let loginWin = null;
@@ -131,6 +136,96 @@ function showAppropriateWindow() {
   }
 }
 
+// ---- Shared upload pipeline (used by upload:start and the Outlook monitor) ----
+async function uploadFilesToCase(caseUuid, filePaths) {
+  if (!caseUuid) throw new Error('caseUuid required.');
+  if (!Array.isArray(filePaths) || !filePaths.length) throw new Error('No files chosen.');
+
+  const api = ensureApiClient();
+  const folderRoot = memory.get('lastFolderPath');
+
+  const descriptors = await Promise.all(filePaths.map(async (p) => {
+    const stat = await fsp.stat(p);
+    return {
+      path: p,
+      name: path.basename(p),
+      size: stat.size,
+      mimeType: mime.lookup(p) || 'application/octet-stream',
+    };
+  }));
+
+  log('info', `Upload pipeline: ${descriptors.length} file(s) to ${caseUuid}.`);
+
+  const presignedReq = {
+    caseUuid,
+    files: descriptors.map((d) => ({
+      folderName: 'autoFolder',
+      fileName: d.name,
+      mimeType: d.mimeType,
+      size: d.size,
+      fieldName: 'caseFiles',
+    })),
+  };
+  const presignedResp = await api.post('/presigned-urls', presignedReq);
+  const payload = presignedResp.data?.body ?? presignedResp.data ?? {};
+  const presigned =
+    payload.urls ||
+    payload.data ||
+    payload.files ||
+    payload.presignedUrls ||
+    (Array.isArray(payload) ? payload : []);
+  const byName = new Map();
+  for (const p of presigned) {
+    const fname = p.fileName || p.name;
+    const url = p.uploadUrl || p.url || p.presignedUrl;
+    const blobPath = p.blobPath || `${caseUuid}/autoFolder/${fname}`;
+    if (fname && url) byName.set(fname, { url, blobPath });
+  }
+
+  const concurrency = Math.max(1, parseInt(ENV.UPLOAD_CONCURRENCY, 10) || 4);
+  const maxRetries = Math.max(1, parseInt(ENV.UPLOAD_MAX_RETRIES, 10) || 3);
+  const limit = pLimit(concurrency);
+  const results = [];
+  await Promise.all(descriptors.map((d) => limit(async () => {
+    const meta = byName.get(d.name);
+    if (!meta) {
+      results.push({ fileName: d.name, ok: false, error: 'no presigned url' });
+      broadcast('upload:progress', { fileName: d.name, status: 'error', error: 'no presigned url' });
+      return;
+    }
+    broadcast('upload:progress', { fileName: d.name, status: 'uploading', loaded: 0, total: d.size });
+    try {
+      await uploadOne({
+        uploadUrl: meta.url,
+        filePath: d.path,
+        contentType: d.mimeType,
+        maxRetries,
+        onProgress: ({ loaded, total }) =>
+          broadcast('upload:progress', { fileName: d.name, status: 'uploading', loaded, total }),
+      });
+      results.push({ fileName: d.name, ok: true, blobPath: meta.blobPath });
+      broadcast('upload:progress', { fileName: d.name, status: 'done', loaded: d.size, total: d.size });
+      log('info', `Uploaded ${d.name}`);
+    } catch (err) {
+      results.push({ fileName: d.name, ok: false, error: err.message });
+      broadcast('upload:progress', { fileName: d.name, status: 'error', error: err.message });
+      log('error', `Upload failed for ${d.name}: ${err.message}`);
+    }
+  })));
+
+  const successes = results.filter((r) => r.ok);
+  if (successes.length) {
+    await api.post('/add-file', {
+      requestUuid: caseUuid,
+      caseFileTypes: '1',
+      caseFiles: successes.map((s) => ({ blobPath: s.blobPath, fileName: s.fileName })),
+    });
+    memory.set('lastCaseUuid', caseUuid);
+    if (folderRoot) memory.set('lastFolderPath', folderRoot);
+  }
+  return { results };
+}
+
 // ---- IPC handlers ----
 function registerIpc() {
   // --- Auth ---
@@ -228,111 +323,98 @@ function registerIpc() {
   // --- Direct upload (manual "Start Upload" button bypasses the agent) ---
   ipcMain.handle('upload:start', async (_e, { caseUuid, filePaths }) => {
     if (!cachedToken) throw new Error('Not signed in.');
-    if (!caseUuid) throw new Error('caseUuid required.');
-    if (!Array.isArray(filePaths) || !filePaths.length) throw new Error('No files chosen.');
-
-    const api = ensureApiClient();
-    const folderRoot = memory.get('lastFolderPath');
-
-    // Build descriptors.
-    const descriptors = await Promise.all(filePaths.map(async (p) => {
-      const stat = await fsp.stat(p);
-      return {
-        path: p,
-        name: path.basename(p),
-        size: stat.size,
-        mimeType: mime.lookup(p) || 'application/octet-stream',
-      };
-    }));
-
-    log('info', `Manual upload: ${descriptors.length} file(s) to ${caseUuid}.`);
-
-    const presignedReq = {
-      caseUuid,
-      files: descriptors.map((d) => ({
-        folderName: 'autoFolder',
-        fileName: d.name,
-        mimeType: d.mimeType,
-        size: d.size,
-        fieldName: 'caseFiles',
-      })),
-    };
-    const presignedResp = await api.post('/presigned-urls', presignedReq);
-    const payload = presignedResp.data?.body ?? presignedResp.data ?? {};
-    const presigned =
-      payload.urls ||
-      payload.data ||
-      payload.files ||
-      payload.presignedUrls ||
-      (Array.isArray(payload) ? payload : []);
-    const byName = new Map();
-    for (const p of presigned) {
-      const fname = p.fileName || p.name;
-      const url = p.uploadUrl || p.url || p.presignedUrl;
-      const blobPath = p.blobPath || `${caseUuid}/autoFolder/${fname}`;
-      if (fname && url) byName.set(fname, { url, blobPath });
-    }
-
-    const concurrency = Math.max(1, parseInt(ENV.UPLOAD_CONCURRENCY, 10) || 4);
-    const maxRetries = Math.max(1, parseInt(ENV.UPLOAD_MAX_RETRIES, 10) || 3);
-    const limit = pLimit(concurrency);
-    const results = [];
-    await Promise.all(descriptors.map((d) => limit(async () => {
-      const meta = byName.get(d.name);
-      if (!meta) {
-        results.push({ fileName: d.name, ok: false, error: 'no presigned url' });
-        broadcast('upload:progress', { fileName: d.name, status: 'error', error: 'no presigned url' });
-        return;
-      }
-      broadcast('upload:progress', { fileName: d.name, status: 'uploading', loaded: 0, total: d.size });
-      try {
-        await uploadOne({
-          uploadUrl: meta.url,
-          filePath: d.path,
-          contentType: d.mimeType,
-          maxRetries,
-          onProgress: ({ loaded, total }) =>
-            broadcast('upload:progress', { fileName: d.name, status: 'uploading', loaded, total }),
-        });
-        results.push({ fileName: d.name, ok: true, blobPath: meta.blobPath });
-        broadcast('upload:progress', { fileName: d.name, status: 'done', loaded: d.size, total: d.size });
-        log('info', `Uploaded ${d.name}`);
-      } catch (err) {
-        results.push({ fileName: d.name, ok: false, error: err.message });
-        broadcast('upload:progress', { fileName: d.name, status: 'error', error: err.message });
-        log('error', `Upload failed for ${d.name}: ${err.message}`);
-      }
-    })));
-
-    const successes = results.filter((r) => r.ok);
-    if (successes.length) {
-      await api.post('/add-file', {
-        requestUuid: caseUuid,
-        caseFileTypes: '1',
-        caseFiles: successes.map((s) => ({ blobPath: s.blobPath, fileName: s.fileName })),
-      });
-      memory.set('lastCaseUuid', caseUuid);
-      if (folderRoot) memory.set('lastFolderPath', folderRoot);
-    }
-    return { results };
+    return uploadFilesToCase(caseUuid, filePaths);
   });
 
   // --- Logs / memory ---
   ipcMain.handle('logs:recent', async () => memoryStore.recentLogs(300));
   ipcMain.handle('logs:clear', async () => { memoryStore.clearLogs(); return { ok: true }; });
   ipcMain.handle('memory:all', async () => memory.all());
+
+  // --- Outlook ---
+  ipcMain.handle('outlook:status', async () => outlookAuth.status());
+
+  ipcMain.handle('outlook:connect', async () => {
+    try {
+      const account = await outlookAuth.interactiveSignIn();
+      log('info', `Outlook connected: ${account.username}`);
+      // Auto-start monitor on connect.
+      startOutlookMonitorIfPossible();
+      return { ok: true, username: account.username };
+    } catch (err) {
+      log('error', `Outlook connect failed: ${err.message}`);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('outlook:disconnect', async () => {
+    outlookMonitor.stop();
+    await outlookAuth.signOut();
+    log('info', 'Outlook disconnected.');
+    return { ok: true };
+  });
+
+  ipcMain.handle('outlook:monitor-start', async () => {
+    const ok = startOutlookMonitorIfPossible();
+    return { ok, active: outlookMonitor.isActive() };
+  });
+  ipcMain.handle('outlook:monitor-stop', async () => {
+    const ok = outlookMonitor.stop();
+    return { ok, active: outlookMonitor.isActive() };
+  });
+  ipcMain.handle('outlook:monitor-status', async () => ({ active: outlookMonitor.isActive() }));
+
+  ipcMain.handle('outlook:templates', async () => listTemplates());
+
+  // --- Records workflow data ---
+  ipcMain.handle('records:list-requests', async (_e, opts) =>
+    memoryStore.listRecordRequests(opts || {}));
+  ipcMain.handle('records:audit', async (_e, opts) =>
+    memoryStore.listAudit(opts || {}));
+}
+
+// Start the inbox monitor only if Outlook is connected. Idempotent.
+function startOutlookMonitorIfPossible() {
+  if (outlookMonitor.isActive()) return true;
+  return outlookMonitor.start({
+    logger: log,
+    broadcaster: broadcast,
+    uploader: async (caseUuid, filePaths) => {
+      // Uploader is invoked by the monitor when it auto-matches a reply.
+      // We need a Kolabrya JWT to be present, otherwise skip with a clear log.
+      if (!cachedToken) {
+        throw new Error('Cannot auto-upload: not signed in to Kolabrya.');
+      }
+      return uploadFilesToCase(caseUuid, filePaths);
+    },
+  });
 }
 
 // ---- App lifecycle ----
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   memoryStore.init(app.getPath('userData'));
   cachedToken = loadStoredToken();
   registerIpc();
   showAppropriateWindow();
 
+  // If Outlook was previously connected, resume the inbox monitor.
+  try {
+    const ostat = await outlookAuth.status();
+    if (ostat.connected) {
+      log('info', `Outlook account remembered: ${ostat.username}. Starting monitor.`);
+      startOutlookMonitorIfPossible();
+    }
+  } catch (err) {
+    log('warn', `Outlook resume failed: ${err.message}`);
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) showAppropriateWindow();
   });
+});
+
+app.on('before-quit', () => {
+  try { outlookMonitor.stop(); } catch { /* noop */ }
 });
 
 app.on('window-all-closed', () => {

@@ -15,12 +15,14 @@
     "build:linux": "electron-builder --linux"
   },
   "dependencies": {
+    "@azure/msal-node": "^2.16.2",
     "axios": "^1.7.7",
     "better-sqlite3": "^11.3.0",
     "dotenv": "^16.4.5",
     "mime-types": "^2.1.35",
     "openai": "^4.67.1",
-    "p-limit": "^3.1.0"
+    "p-limit": "^3.1.0",
+    "sanitize-filename": "^1.6.3"
   },
   "devDependencies": {
     "electron": "^32.1.2",
@@ -37,6 +39,7 @@
       "agent/**/*",
       "api/**/*",
       "db/**/*",
+      "outlook/**/*",
       "renderer/**/*",
       "node_modules/**/*"
     ],

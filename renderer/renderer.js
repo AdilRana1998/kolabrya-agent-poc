@@ -260,6 +260,75 @@ function AgentBar({ onSubmit, busy }) {
   );
 }
 
+// ---------- Outlook panel ----------
+function OutlookPanel({ outlook, monitor, requests, onConnect, onDisconnect, onToggleMonitor, onRefresh, busy }) {
+  const statusBadge = outlook.connected
+    ? h('span', { className: 'badge ok' }, 'connected')
+    : h('span', { className: 'badge' }, 'not connected');
+  const monitorBadge = monitor.active
+    ? h('span', { className: 'badge ok' }, 'monitor on')
+    : h('span', { className: 'badge' }, 'monitor off');
+
+  return h('div', { className: 'panel' },
+    h('header', null, 'Outlook',
+      h('div', { className: 'actions' },
+        h('button', { onClick: onRefresh, disabled: busy }, 'Refresh'),
+        outlook.connected
+          ? h('button', { onClick: onDisconnect, className: 'danger', disabled: busy }, 'Disconnect')
+          : h('button', { onClick: onConnect, className: 'primary', disabled: busy }, 'Connect'),
+      ),
+    ),
+    h('div', { className: 'body' },
+      h('div', { className: 'row wrap', style: { gap: 8, marginBottom: 8 } },
+        statusBadge,
+        outlook.username ? h('span', { className: 'muted' }, outlook.username) : null,
+        outlook.connected ? monitorBadge : null,
+        outlook.connected
+          ? h('button', { onClick: onToggleMonitor, disabled: busy, style: { padding: '2px 8px', fontSize: 11 } },
+              monitor.active ? 'Pause' : 'Start')
+          : null,
+      ),
+      !outlook.connected
+        ? h('div', { className: 'muted', style: { fontSize: 12 } },
+            'Connect Outlook to send records requests and auto-download replies. ',
+            'Setup steps in ', h('span', { className: 'kbd' }, 'README.outlook.md'), '.'
+          )
+        : h('div', null,
+            h('div', { className: 'muted', style: { marginBottom: 6, fontSize: 12 } },
+              `${requests.length} request(s)`),
+            requests.length === 0
+              ? h('div', { className: 'empty' },
+                  'No records requests yet. Ask the agent: ',
+                  h('span', { className: 'kbd' }, '"send a records request to ..."'))
+              : h('div', { className: 'file-list' },
+                  ...requests.slice(0, 8).map((r) =>
+                    h('div', {
+                      key: r.id,
+                      className: 'file-row',
+                      style: { gridTemplateColumns: '1fr auto auto' },
+                    },
+                      h('div', { className: 'name' },
+                        h('div', null, r.patient_name || '(no patient)'),
+                        h('div', { className: 'mono faint', style: { fontSize: 11 } },
+                          `${r.doctor_office_name || r.doctor_email} · ${r.ref_token}`),
+                      ),
+                      h('span', {
+                        className: 'badge ' + (
+                          r.status === 'uploaded' || r.status === 'downloaded' ? 'ok'
+                          : r.status === 'error' ? 'err'
+                          : 'run'
+                        ),
+                      }, r.status),
+                      h('span', { className: 'faint', style: { fontSize: 11 } },
+                        new Date(r.updated_at || r.created_at).toLocaleDateString()),
+                    )
+                  )
+                )
+          ),
+    ),
+  );
+}
+
 // ---------- App root ----------
 function App() {
   const [email, setEmail] = useState(null);
@@ -278,6 +347,12 @@ function App() {
   const [agentBusy, setAgentBusy] = useState(false);
 
   const [logs, setLogs] = useState([]);
+
+  // Outlook state
+  const [outlookStatus, setOutlookStatus] = useState({ connected: false, username: null });
+  const [monitorState, setMonitorState] = useState({ active: false });
+  const [outlookBusy, setOutlookBusy] = useState(false);
+  const [recordRequests, setRecordRequests] = useState([]);
 
   // --- Boot ---
   useEffect(() => {
@@ -302,8 +377,59 @@ function App() {
           : `agent step ${s.i}: ${s.tool}`;
       setLogs((prev) => [...prev.slice(-499), { ts: Date.now(), level: 'info', message: desc }]);
     });
-    return () => { offLog(); offProg(); offStep(); };
+    const offOutlook = window.kolabrya.onOutlookEvent(() => {
+      // When the monitor processes new mail, refresh the requests list.
+      refreshOutlook();
+    });
+    refreshOutlook();
+    return () => { offLog(); offProg(); offStep(); offOutlook(); };
   }, []);
+
+  // --- Outlook actions ---
+  async function refreshOutlook() {
+    try {
+      const [stat, mon, reqs] = await Promise.all([
+        window.kolabrya.outlook.status(),
+        window.kolabrya.outlook.monitorStatus(),
+        window.kolabrya.records.listRequests({ limit: 50 }),
+      ]);
+      setOutlookStatus(stat || { connected: false });
+      setMonitorState(mon || { active: false });
+      setRecordRequests(reqs || []);
+    } catch (e) {
+      // First-load races are fine.
+    }
+  }
+  async function connectOutlook() {
+    setOutlookBusy(true);
+    try {
+      await window.kolabrya.outlook.connect();
+      await refreshOutlook();
+    } catch (e) {
+      setLogs((prev) => [...prev, { ts: Date.now(), level: 'error', message: `Outlook: ${e.message}` }]);
+    } finally {
+      setOutlookBusy(false);
+    }
+  }
+  async function disconnectOutlook() {
+    setOutlookBusy(true);
+    try {
+      await window.kolabrya.outlook.disconnect();
+      await refreshOutlook();
+    } finally {
+      setOutlookBusy(false);
+    }
+  }
+  async function toggleMonitor() {
+    setOutlookBusy(true);
+    try {
+      if (monitorState.active) await window.kolabrya.outlook.monitorStop();
+      else await window.kolabrya.outlook.monitorStart();
+      await refreshOutlook();
+    } finally {
+      setOutlookBusy(false);
+    }
+  }
 
   // Re-pull case list and memory after the agent runs (it may have created a case).
   async function refreshMemory() {
@@ -404,6 +530,7 @@ function App() {
       }
       await refreshCases();
       await refreshMemory();
+      await refreshOutlook();
     } catch (e) {
       setLogs((prev) => [...prev, { ts: Date.now(), level: 'error', message: e.message }]);
     } finally {
@@ -436,6 +563,12 @@ function App() {
       ),
       h('div', { className: 'right-col' },
         h(UploadPanel, { progress, canUpload, onStart: startUpload, busy: uploadBusy }),
+        h(OutlookPanel, {
+          outlook: outlookStatus, monitor: monitorState, requests: recordRequests,
+          onConnect: connectOutlook, onDisconnect: disconnectOutlook,
+          onToggleMonitor: toggleMonitor, onRefresh: refreshOutlook,
+          busy: outlookBusy,
+        }),
         h(LogsPanel, { lines: logs, onClear: clearLogs }),
       ),
       h(AgentBar, { onSubmit: runAgent, busy: agentBusy }),

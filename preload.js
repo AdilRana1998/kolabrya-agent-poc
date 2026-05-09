@@ -33,6 +33,21 @@ contextBridge.exposeInMainWorld('kolabrya', {
   // ---- Memory ----
   getMemory: () => ipcRenderer.invoke('memory:all'),
 
+  // ---- Outlook ----
+  outlook: {
+    status: () => ipcRenderer.invoke('outlook:status'),
+    connect: () => ipcRenderer.invoke('outlook:connect'),
+    disconnect: () => ipcRenderer.invoke('outlook:disconnect'),
+    monitorStart: () => ipcRenderer.invoke('outlook:monitor-start'),
+    monitorStop: () => ipcRenderer.invoke('outlook:monitor-stop'),
+    monitorStatus: () => ipcRenderer.invoke('outlook:monitor-status'),
+    templates: () => ipcRenderer.invoke('outlook:templates'),
+  },
+  records: {
+    listRequests: (opts) => ipcRenderer.invoke('records:list-requests', opts),
+    audit: (opts) => ipcRenderer.invoke('records:audit', opts),
+  },
+
   // ---- Streaming events (logs + progress) ----
   onLog: (cb) => {
     const listener = (_e, payload) => cb(payload);
@@ -48,5 +63,10 @@ contextBridge.exposeInMainWorld('kolabrya', {
     const listener = (_e, payload) => cb(payload);
     ipcRenderer.on('agent:step', listener);
     return () => ipcRenderer.removeListener('agent:step', listener);
+  },
+  onOutlookEvent: (cb) => {
+    const listener = (_e, payload) => cb(payload);
+    ipcRenderer.on('outlook:event', listener);
+    return () => ipcRenderer.removeListener('outlook:event', listener);
   },
 });

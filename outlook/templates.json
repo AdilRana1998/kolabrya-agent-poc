@@ -1,0 +1,11 @@
+{
+  "medical_records_request": {
+    "subject": "Medical Records Request — {{patientName}} (DOB {{patientDob}})  [Ref: {{refToken}}]",
+    "html": "<p>Dear {{doctorOfficeName}} team,</p><p>I am writing on behalf of patient <strong>{{patientName}}</strong> (Date of Birth: <strong>{{patientDob}}</strong>) to formally request copies of the following medical records:</p><p>{{requestedDocuments}}</p><p>This request is in connection with case reference <strong>{{caseReference}}</strong>. Please reply to this email with the records as PDF attachments. Reply directly to this thread so the request stays linked to <code>[Ref: {{refToken}}]</code>.</p><p>For any questions, please contact <a href=\"mailto:{{replyTo}}\">{{replyTo}}</a>.</p><p>Thank you for your time.</p><p>Best regards,<br/>{{senderName}}</p>",
+    "text": "Dear {{doctorOfficeName}} team,\n\nI am writing on behalf of patient {{patientName}} (Date of Birth: {{patientDob}}) to formally request copies of the following medical records:\n\n{{requestedDocuments}}\n\nThis request is in connection with case reference {{caseReference}}. Please reply to this email with the records as PDF attachments. Reply directly to this thread so the request stays linked to [Ref: {{refToken}}].\n\nFor any questions, please contact {{replyTo}}.\n\nThank you for your time.\n\nBest regards,\n{{senderName}}\n",
+    "requiredFields": [
+      "doctorOfficeName", "patientName", "patientDob",
+      "requestedDocuments", "refToken", "replyTo", "senderName"
+    ]
+  }
+}

@@ -5,8 +5,14 @@ const getCases = require('./tools/get-cases');
 const readLocalFiles = require('./tools/read-local-files');
 const uploadFiles = require('./tools/upload-files');
 const deleteFile = require('./tools/delete-file');
+const outlookSendRequest = require('./tools/outlook-send-request');
+const outlookListReplies = require('./tools/outlook-list-replies');
+const outlookDownloadAttachments = require('./tools/outlook-download-attachments');
 
-const tools = [createCase, getCases, readLocalFiles, uploadFiles, deleteFile];
+const tools = [
+  createCase, getCases, readLocalFiles, uploadFiles, deleteFile,
+  outlookSendRequest, outlookListReplies, outlookDownloadAttachments,
+];
 
 const byName = new Map(tools.map((t) => [t.name, t]));
 
